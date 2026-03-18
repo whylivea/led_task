@@ -16,7 +16,8 @@ set(require
     esp_netif     # 网络接口
     nvs_flash
     mqtt
-    driver)
+    driver
+    bt)
 
 idf_component_register(
     SRC_DIRS ${src_dirs}

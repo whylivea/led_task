@@ -60,7 +60,7 @@ void onenet_property_handle(cJSON* property)
         cJSON *name_js = param_js->child;
         while (name_js)
         {
-            if (strcmp(name_js->string, "humidity_value") == 0)
+            if (strcmp(name_js->string, "humi_value") == 0)
             {
                 // 注意：平台下发的是直接数值 {"Brightness": 50}
                  humidity_flag= cJSON_GetNumberValue(name_js);
@@ -106,7 +106,7 @@ cJSON *onenet_property_upload(void)
     int temperature = dht11_data.temperature_int + dht11_data.temperature_dec * 0.1;
     cJSON_AddNumberToObject(temperature_js,"value",temperature);
     //湿度
-    cJSON*humidity_js=cJSON_AddObjectToObject(parm_js,"humidity_value");
+    cJSON*humidity_js=cJSON_AddObjectToObject(parm_js,"humi_value");
     int64_t humidity = (int64_t)(dht11_data.humidity_int + dht11_data.humidity_dec * 0.1);
     cJSON_AddNumberToObject(humidity_js,"value",humidity);
     return root;

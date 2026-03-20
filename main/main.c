@@ -1,24 +1,18 @@
-#include "LED.h"
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/task.h"
-#include "freertos/timers.h"
-#include "Usuart.h"
-#include "oled.h"
-#include "wifi_command.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "driver/uart.h"
+#include "JGdistance.h"
+#include "wifi_command.h"
 #include "onenet_token.h"
 #include "onenet_mqtt.h"
 #include "onenet_dm.h"
-#include "driver/ledc.h"
-#include "dht11.h"
 #include "GPS.h"
+#include "dht11.h"
 #include "my_bluetooth.h"
-
-
 
 
 #define id "a405"
@@ -27,80 +21,99 @@
 static EventGroupHandle_t wifi_event = NULL;
 #define WIFI_CONNECT_BIT BIT0
 
-#define TAG "MAIN"
-
-static TaskHandle_t uart_task_handle = NULL;
-// ============ WiFi状态回调 ============
 static void wifi_state_callback(wifi_state state)
 {
     if(state == wifi_connect_able)
         xEventGroupSetBits(wifi_event, WIFI_CONNECT_BIT);
 }
 
-// ============ 设备间消息回调 ============
-static void device_message_handler(const char* from_device, const char* message)
-{
-    if (strstr(message, "\"type\":\"pitch\""))
-        ESP_LOGI(TAG, "PITCH alert from %s", from_device);
+// UART定义
+#define UART_VL53L0    UART_NUM_1  // VL53L0: TX=14, RX=13
+#define UART_VOICE     UART_NUM_2  // 语音模块: TX=17, RX=16
+
+#define TAG "MAIN"
+
+// 函数声明
+void init_vl53l0_uart(void);
+void init_voice_uart(void);
+void send_to_voice(char c);
+
+// ============ 初始化VL53L0的UART ============
+void init_vl53l0_uart(void) {
+    ESP_LOGI(TAG, "Init VL53L0 UART: TX=14, RX=13");
+    
+    uart_config_t uart_config = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+    
+    uart_param_config(UART_VL53L0, &uart_config);
+    uart_set_pin(UART_VL53L0, 14, 13, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(UART_VL53L0, 1024 * 2, 0, 0, NULL, 0);
+    
+    ESP_LOGI(TAG, "VL53L0 UART ready");
 }
 
-//串口回调函数，接收a，串口2打印回a
+// ============ 初始化语音模块的UART ============
+void init_voice_uart(void) {
+    ESP_LOGI(TAG, "Init Voice UART: TX=25, RX=26");
+    
+    uart_config_t uart_config = {
+        .baud_rate = 9600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_APB,
+    };
+    
+    uart_param_config(UART_VOICE, &uart_config);
+    uart_set_pin(UART_VOICE, 25, 26, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(UART_VOICE, 1024 * 2, 0, 0, NULL, 0);
+    
+    ESP_LOGI(TAG, "Voice UART ready");
+}
 
-
-static void uart_rx_task(void *pvParameters)
-{
-    uint8_t rx_data[128];
-    int len;
-    while(1) {
-        // 读取串口数据
-        len = uart_read_bytes(USART_US, rx_data, sizeof(rx_data), pdMS_TO_TICKS(100));
-        
-        if (len > 0) {
-            // 处理每个接收到的字节
-            for (int i = 0; i < len; i++) {
-                // 如果收到 'a'，回显 'a'
-                if (rx_data[i] == 'a') {
-                    ESP_LOGI(TAG, "Received 'a', echoing back");
-                    uart_write_bytes(USART_US, "a", 1);
-                }
-                // 如果收到 'A'，回显 'A'
-                else if (rx_data[i] == 'A') {
-
-                    uart_write_bytes(USART_US, "A", 1);
-                }
-                // 其他字符，回显原字符
-                else {
-                    uart_write_bytes(USART_US, &rx_data[i], 1);
-                }
-            }
-        }
-        
-        vTaskDelay(pdMS_TO_TICKS(10));
+// ============ 发送字符到语音模块 ============
+void send_to_voice(char c) {
+    int written = uart_write_bytes(UART_VOICE, &c, 1);
+    if (written == 1) {
+        ESP_LOGI("VOICE", "Sent: %c", c);
+    } else {
+        ESP_LOGE("VOICE", "Send failed: %c", c);
     }
 }
 
-
-
 // ============ 主函数 ============
-void app_main(void)
-{
-
-
+void app_main(void) {
     
-   esp_err_t ret = nvs_flash_init();
+    // 2. 初始化两个UART
+    init_vl53l0_uart();   // VL53L0测距模块
+    init_voice_uart();    // 语音模块
+    esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         ret = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(ret);
-    
-    wifi_event = xEventGroupCreate();
+     wifi_event = xEventGroupCreate();
     
     DHT11_Init(GPIO_NUM_15);
-   onenet_register_message_callback(device_message_handler);
     onenet_dm_Init();
-    LED_Init(2);
     wifi_command_Init(wifi_state_callback);
+    ESP_ERROR_CHECK(ret);  
+    // 3. 等待硬件稳定
+    vTaskDelay(pdMS_TO_TICKS(100));
+    
+    
+    
+    // 5. 启动VL53L0任务
+    xTaskCreate(vl53l0_task, "vl53l0", 4096, NULL, 5, NULL);
+    
+    ESP_LOGI(TAG, "System ready!");
     
     ESP_LOGI(TAG, "Initializing Bluetooth...");
     bluetooth_init();
@@ -111,7 +124,6 @@ void app_main(void)
                                    reconnect_timer_callback);
     
     xTaskCreate(temp_monitor_task, "temp_monitor", 4096, NULL, 5, NULL);
-     xTaskCreate(uart_rx_task, "uart_rx", 3072, NULL, 5, &uart_task_handle);
     wifi_command_connect(id, password);
     start_gps_task();
     while(1) {
@@ -124,3 +136,4 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
+

@@ -1,20 +1,9 @@
 #include "GPS.h"
 
-// 经纬度结构体
-typedef struct {
-    double latitude;
-    double longitude;
-    char ns_indicator;  // 'N' or 'S'
-    char ew_indicator;  // 'E' or 'W'
-    int fix_quality;    // 定位质量 0=无效,1=GPS,2=DGPS
-    int satellites;      // 卫星数量
-    float altitude;      // 海拔高度
-    int hour, minute, second;  // UTC时间
-    int day, month, year;      // UTC日期
-    bool valid;          // 数据是否有效
-} gps_data_t;
 
-static gps_data_t gps_data = {0};
+
+gps_data_t gps_data = {0};
+
 
 // ============ NMEA句子解析函数 ============
 

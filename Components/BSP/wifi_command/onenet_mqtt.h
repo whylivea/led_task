@@ -2,13 +2,12 @@
 #define __onenet_mqtt_h_
 #include "esp_err.h"
 #include "cJSON.h"
-#define ONENET_PRODUCT_ID  "5OFAy8Z8N9"
-#define ONENET_PRODUCT_ACCESS_KEY  "UGhrVFREWnQzaUkxTXl4SW8xMmk0Q01WbXFsbHM5REE="
-#define ONENET_DEVICE_NAME "cam_dht11"
+#include "GPS.h"
+// ===== 写死的设备名称 =====
+#define MY_DEVICE_NAME       "cam_dht11"      // S3自己的设备名
+#define PRODUCT_ID           "5OFAy8Z8N9"
+#define PRODUCT_ACCESS_KEY   "UGhrVFREWnQzaUkxTXl4SW8xMmk0Q01WbXFsbHM5REE="
 
-// 自定义设备间通信Topic格式
-#define CUSTOM_TOPIC_FORMAT "$sys/%s/%s/device/%s/command"
-#define CUSTOM_TOPIC_REPLY_FORMAT "$sys/%s/%s/device/+/command_reply"
 
 esp_err_t onenet_start(void);
 static void onenet_property_ack(const char* id, int code, const char* msg);

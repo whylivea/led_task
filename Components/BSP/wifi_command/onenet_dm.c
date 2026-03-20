@@ -2,6 +2,8 @@
 #include "driver\ledc.h"
 #include "string.h"
 #include "dht11.h"
+#include "GPS.h"
+
 
 static int led_brightness=0;
 static int led_status=0;
@@ -87,7 +89,9 @@ cJSON *onenet_property_upload(void)
   "version": "1.0",
   "params": {
     "Temperature":{"value":25.5},
-    "Humidity":{"value":60，因为onenet平台中湿度的代码是int64_t的，所以上面的代码我要强转}
+    "Humidity":{"value":60},
+    "Latitude":{"value":39.9042},  // 纬度
+    "Longitude":{"value":116.4074} // 经度
     }
 }
     */
@@ -109,5 +113,31 @@ cJSON *onenet_property_upload(void)
     cJSON*humidity_js=cJSON_AddObjectToObject(parm_js,"humi_value");
     int64_t humidity = (int64_t)(dht11_data.humidity_int + dht11_data.humidity_dec * 0.1);
     cJSON_AddNumberToObject(humidity_js,"value",humidity);
+
+    // 添加GPS经纬度数据
+   
+    if (gps_data.valid) {
+        // 纬度
+        cJSON*latitude_js=cJSON_AddObjectToObject(parm_js,"J");
+        cJSON_AddNumberToObject(latitude_js,"value",gps_data.latitude);
+
+        // 经度
+        cJSON*longitude_js=cJSON_AddObjectToObject(parm_js,"W");
+        cJSON_AddNumberToObject(longitude_js,"value",gps_data.longitude);
+
+        cJSON* gps_altitude_js = cJSON_AddObjectToObject(parm_js, "gps_altitude");
+            cJSON_AddNumberToObject(gps_altitude_js, "value", gps_data.altitude);
+    } else {
+        // GPS数据无效时上传默认值或0
+        cJSON*latitude_js=cJSON_AddObjectToObject(parm_js,"J");
+        cJSON_AddNumberToObject(latitude_js,"value",0.0);
+
+        cJSON*longitude_js=cJSON_AddObjectToObject(parm_js,"W");
+        cJSON_AddNumberToObject(longitude_js,"value",0.0);
+
+         cJSON* gps_altitude_js = cJSON_AddObjectToObject(parm_js, "gps_altitude");
+            cJSON_AddNumberToObject(gps_altitude_js, "value", 0);
+    }
+
     return root;
 }

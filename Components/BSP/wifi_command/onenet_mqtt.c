@@ -22,11 +22,6 @@ static TaskHandle_t report_task_handle = NULL;
 // 温度阈值定义
 #define TEMPERATURE_THRESHOLD 30
 
-// ===== 写死的设备名称 =====
-#define MY_DEVICE_NAME       "cam_dht11"      // S3自己的设备名
-#define TARGET_DEVICE_NAME   "aaaaaaaaaaa"    // CAM的设备名
-#define PRODUCT_ID           "5OFAy8Z8N9"
-#define PRODUCT_ACCESS_KEY   "UGhrVFREWnQzaUkxTXl4SW8xMmk0Q01WbXFsbHM5REE="
 
 #define TAG "onenet"
 
@@ -220,25 +215,6 @@ esp_err_t onenet_post_property_data(const char* data)
     return esp_mqtt_client_publish(mqtt_handle, topic, data, strlen(data), 1, 0);
 }
 
-/* 发布消息到CAM */
-void onenet_publish_to_cam(const char* message)
-{
-    if (mqtt_handle == NULL) {
-        ESP_LOGE(TAG, "MQTT not initialized");
-        return;
-    }
-    
-    char topic[256];
-    // 写死的Topic格式：$sys/产品ID/本设备/device/目标设备/command
-    snprintf(topic, sizeof(topic), "$sys/%s/%s/device/%s/command",
-             PRODUCT_ID, MY_DEVICE_NAME, TARGET_DEVICE_NAME);
-    
-    ESP_LOGI(TAG, "Publishing to CAM: %s", topic);
-    ESP_LOGI(TAG, "Message: %s", message);
-    
-    int msg_id = esp_mqtt_client_publish(mqtt_handle, topic, message, strlen(message), 1, 0);
-    ESP_LOGI(TAG, "Publish msg_id: %d", msg_id);
-}
 
 /* 注册设备间消息回调函数 */
 void onenet_register_message_callback(void (*callback)(const char* from_device, const char* message))
@@ -262,10 +238,7 @@ static void report_task(void *pvParameters)
                          temperature, TEMPERATURE_THRESHOLD);
 
                 // 发送pitch消息给CAM
-                char message[128];
-                snprintf(message, sizeof(message), "{\"type\":\"pitch\",\"temperature\":%d}", temperature);
-                onenet_publish_to_cam(message);
-
+              
                 // 通过蓝牙发送字符'a'
                 esp_err_t ret = bluetooth_send_char('a');
                 if (ret != ESP_OK) {
@@ -274,7 +247,17 @@ static void report_task(void *pvParameters)
                     ESP_LOGI(TAG, "Bluetooth alert sent successfully");
                 }
             }
-
+               if (gps_data.valid) {
+                ESP_LOGI(TAG, "GPS: Lat=%.6f, Lon=%.6f, Alt=%.1f, Sat=%d, Fix=%d",
+                         gps_data.latitude,
+                         gps_data.longitude,
+                         gps_data.altitude,
+                         gps_data.satellites,
+                         gps_data.fix_quality);
+            } else {
+                ESP_LOGW(TAG, "GPS: Waiting for fix... Satellites=%d", 
+                         gps_data.satellites);
+            }
             // 上报数据到OneNet
             cJSON *property_js = onenet_property_upload();
             char *data = cJSON_PrintUnformatted(property_js);

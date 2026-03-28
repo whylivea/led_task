@@ -1,6 +1,9 @@
 #include "my_bluetooth.h"
 #include "esp_log.h"
 #include "freertos/task.h"
+#include "mpu6050.h"
+#include <math.h>
+#include "LED.h"
 
 // 蓝牙全局变量
 static uint8_t target_bt_addr[6] = BT_TARGET_ADDR;
@@ -234,30 +237,186 @@ esp_err_t bluetooth_send_char(char c)
     return ret;
 }
 
-// ============ 温度监控任务 ============
+// ============ MPU6050姿态角监控任务 ============
 void temp_monitor_task(void *pvParameters)
 {
-    float temp_threshold = 30.0;
-    int send_count = 0;
-    int fail_count = 0;
-    
+    // 倾斜角阈值设置（单位：度）
+    const float tilt_threshold = 30.0f;
+
+    // LED GPIO定义
+    const uint8_t LEFT_LED_PIN = GPIO_NUM_33;
+    const uint8_t RIGHT_LED_PIN = GPIO_NUM_32;
+
+    // LED闪烁参数
+    const TickType_t blink_interval = pdMS_TO_TICKS(200);
+    TickType_t last_blink_time = 0;
+    bool led_state = false;
+
+    // 拍照状态变量
+    int photo_count = 0;
+    bool is_capturing = false;
+    TickType_t capture_start_time = 0;
+    const TickType_t cooldown_time = pdMS_TO_TICKS(5000);
+    TickType_t last_capture_time = 0;
+
+    // LED激活状态
+    bool left_led_active = false;
+    bool right_led_active = false;
+    float last_tilt_x = 0.0f;
+
+    ESP_LOGI(TAG, "MPU6050姿态监控任务启动");
+    ESP_LOGI(TAG, "倾斜角阈值: %.1f度", tilt_threshold);
+    ESP_LOGI(TAG, "左LED GPIO: %d, 右LED GPIO: %d", LEFT_LED_PIN, RIGHT_LED_PIN);
+
+    // 初始化LED（即使没有MPU6050，LED也可以先初始化）
+    LED_Init(LEFT_LED_PIN);
+    LED_Init(RIGHT_LED_PIN);
+    gpio_set_level(LEFT_LED_PIN, 0);
+    gpio_set_level(RIGHT_LED_PIN, 0);
+
+    // MPU6050相关变量
+    mpu6050_config_t config = {
+        .address = MPU6050_DEFAULT_ADDRESS,
+        .accel_range = MPU6050_ACCEL_RANGE_2_G,
+        .gyro_range = MPU6050_GYRO_RANGE_250_DPS,
+        .sample_rate = 100
+    };
+    mpu6050_data_t sensor_data;
+    bool mpu6050_ok = false;
+
+    // 尝试初始化MPU6050，失败也不退出，只是标记为不可用
+    esp_err_t ret = mpu6050_init(&config);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "MPU6050初始化失败: %s，将禁用姿态检测功能", esp_err_to_name(ret));
+        mpu6050_ok = false;
+    } else {
+        ESP_LOGI(TAG, "MPU6050初始化成功，姿态检测功能已启用");
+        mpu6050_ok = true;
+        vTaskDelay(pdMS_TO_TICKS(100));  // 等待传感器稳定
+    }
+
+    // 主循环
     while(1) {
-        if (dht11_read_data(GPIO_NUM_15) == ESP_OK && dht11_data.valid) {
-            float temperature = dht11_data.temperature_int + dht11_data.temperature_dec / 10.0;
-            
-            if (temperature > temp_threshold) {
-                ESP_LOGI(TAG, "Temp %.1f°C > %d°C", temperature, (int)temp_threshold);
-                esp_err_t ret = bluetooth_send_char('a');
+        // 只有在MPU6050正常时才读取数据
+        if (mpu6050_ok) {
+            ret = mpu6050_read_all(&sensor_data);
+
+            if (ret == ESP_OK) {
+                // 使用加速度计数据计算倾斜角
+                float accel_x_g = sensor_data.ax / 16384.0f;
+                float accel_y_g = sensor_data.ay / 16384.0f;
+                float accel_z_g = sensor_data.az / 16384.0f;
+
+                // 计算X轴方向的倾斜角（用于左右转头检测）
+                float tilt_x = atan2(accel_x_g, sqrt(accel_y_g * accel_y_g + accel_z_g * accel_z_g)) * 180.0f / M_PI;
+
+                // 计算总体倾斜角（用于摔倒检测）
+                float tilt_angle = atan2(sqrt(accel_x_g * accel_x_g + accel_y_g * accel_y_g), accel_z_g) * 180.0f / M_PI;
+
+                ESP_LOGD(TAG, "加速度: X=%.2fg, Y=%.2fg, Z=%.2fg, X轴倾斜=%.1f度, 总倾斜角=%.1f度",
+                         accel_x_g, accel_y_g, accel_z_g, tilt_x, tilt_angle);
+
+                // 检查左右转头动作
+                if (tilt_x < -tilt_threshold && !left_led_active) {
+                    ESP_LOGI(TAG, "检测到向左转头: %.1f度", tilt_x);
+                    left_led_active = true;
+                    right_led_active = false;
+                    last_blink_time = xTaskGetTickCount();
+                    last_tilt_x = tilt_x;
+                }
+                else if (tilt_x > tilt_threshold && !right_led_active) {
+                    ESP_LOGI(TAG, "检测到向右转头: %.1f度", tilt_x);
+                    right_led_active = true;
+                    left_led_active = false;
+                    last_blink_time = xTaskGetTickCount();
+                    last_tilt_x = tilt_x;
+                }
+                else if (fabs(tilt_x) < tilt_threshold * 0.5f) {
+                    if (left_led_active || right_led_active) {
+                        ESP_LOGI(TAG, "回到中间位置，关闭LED");
+                        left_led_active = false;
+                        right_led_active = false;
+                        gpio_set_level(LEFT_LED_PIN, 0);
+                        gpio_set_level(RIGHT_LED_PIN, 0);
+                    }
+                }
+
+                // LED闪烁处理
+                if (left_led_active || right_led_active) {
+                    TickType_t current_time = xTaskGetTickCount();
+                    if ((current_time - last_blink_time) >= blink_interval) {
+                        led_state = !led_state;
+                        last_blink_time = current_time;
+
+                        if (left_led_active) {
+                            gpio_set_level(LEFT_LED_PIN, led_state ? 1 : 0);
+                            gpio_set_level(RIGHT_LED_PIN, 0);
+                        } else if (right_led_active) {
+                            gpio_set_level(RIGHT_LED_PIN, led_state ? 1 : 0);
+                            gpio_set_level(LEFT_LED_PIN, 0);
+                        }
+                    }
+                }
+
+                // 检查是否达到总倾斜角阈值（摔倒检测）
+                if (tilt_angle > tilt_threshold * 1.5f && !is_capturing) {
+                    TickType_t current_time = xTaskGetTickCount();
+                    if ((current_time - last_capture_time) >= cooldown_time) {
+                        ESP_LOGI(TAG, "检测到摔倒风险: 总倾斜角 %.1f度", tilt_angle);
+
+                        is_capturing = true;
+                        photo_count = 0;
+                        capture_start_time = current_time;
+
+                        left_led_active = false;
+                        right_led_active = false;
+                        gpio_set_level(LEFT_LED_PIN, 0);
+                        gpio_set_level(RIGHT_LED_PIN, 0);
+
+                        bluetooth_send_char('s');  // 用's'表示摔倒，避免冲突
+                    }
+                }
+
+                // 处理拍照流程
+                if (is_capturing) {
+                    TickType_t current_time = xTaskGetTickCount();
+                    if (photo_count < 2 && (current_time - capture_start_time) >= pdMS_TO_TICKS(500 * (photo_count + 1))) {
+                        bluetooth_send_char('s');
+                        photo_count++;
+                        ESP_LOGI(TAG, "已拍摄 %d/3 张照片", photo_count + 1);
+                    } else if (photo_count >= 2) {
+                        is_capturing = false;
+                        last_capture_time = current_time;
+                        ESP_LOGI(TAG, "拍照流程完成");
+                    }
+                }
+            } else {
+                ESP_LOGE(TAG, "读取MPU6050数据失败: %s", esp_err_to_name(ret));
+                // 如果连续失败，标记为不可用
+                static int fail_count = 0;
+                fail_count++;
+                if (fail_count > 10) {
+                    ESP_LOGW(TAG, "MPU6050连续读取失败，禁用姿态检测");
+                    mpu6050_ok = false;
+                }
+            }
+        } else {
+            // MPU6050不可用，静默等待，不输出日志
+            // 每10秒尝试重新初始化一次
+            static TickType_t last_check = 0;
+            TickType_t now = xTaskGetTickCount();
+            if ((now - last_check) >= pdMS_TO_TICKS(10000)) {
+                last_check = now;
+                ESP_LOGI(TAG, "尝试重新初始化MPU6050...");
+                ret = mpu6050_init(&config);
                 if (ret == ESP_OK) {
-                    send_count++;
-                    ESP_LOGI(TAG, "Alert sent %d times", send_count);
-                    fail_count = 0;
-                } else {
-                    fail_count++;
-                    ESP_LOGW(TAG, "Failed to send alert, fail count: %d", fail_count);
+                    ESP_LOGI(TAG, "MPU6050重新初始化成功！");
+                    mpu6050_ok = true;
                 }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(5000));
+
+        // 每100ms检查一次（10Hz）
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

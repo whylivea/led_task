@@ -13,6 +13,7 @@
 #include "GPS.h"
 #include "dht11.h"
 #include "my_bluetooth.h"
+#include "serial.h"
 
 
 #define id "a405"
@@ -29,9 +30,12 @@ static void wifi_state_callback(wifi_state state)
 
 // UART定义
 #define UART_VL53L0    UART_NUM_1  // VL53L0: TX=14, RX=13
-#define UART_VOICE     UART_NUM_2  // 语音模块: TX=17, RX=16
+// 语音模块使用软件串口，不需要硬件UART定义
 
 #define TAG "MAIN"
+
+// 软件串口实例ID
+static int voice_serial_id = -1;
 
 // 函数声明
 void init_vl53l0_uart(void);
@@ -58,34 +62,29 @@ void init_vl53l0_uart(void) {
     ESP_LOGI(TAG, "VL53L0 UART ready");
 }
 
-// ============ 初始化语音模块的UART ============
+// ============ 初始化语音模块的软件串口 ============
 void init_voice_uart(void) {
-    ESP_LOGI(TAG, "Init Voice UART: TX=25, RX=26");
-    
-    uart_config_t uart_config = {
-        .baud_rate = 9600,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_APB,
-    };
-    
-    uart_param_config(UART_VOICE, &uart_config);
-    uart_set_pin(UART_VOICE, 25, 26, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_driver_install(UART_VOICE, 1024 * 2, 0, 0, NULL, 0);
-    
-    ESP_LOGI(TAG, "Voice UART ready");
+    ESP_LOGI(TAG, "Init Voice Software Serial: TX=25, RX=26");
+
+    // 使用软件串口库初始化
+    voice_serial_id = serial_begin(9600, 26, 25);
+    if (voice_serial_id < 0) {
+        ESP_LOGE(TAG, "Failed to initialize software serial!");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Voice Software Serial ready (instance_id=%d)", voice_serial_id);
 }
 
 // ============ 发送字符到语音模块 ============
 void send_to_voice(char c) {
-    int written = uart_write_bytes(UART_VOICE, &c, 1);
-    if (written == 1) {
-        ESP_LOGI("VOICE", "Sent: %c", c);
-    } else {
-        ESP_LOGE("VOICE", "Send failed: %c", c);
+    if (voice_serial_id < 0) {
+        ESP_LOGE("VOICE", "Software serial not initialized!");
+        return;
     }
+
+    serial_write(voice_serial_id, (uint8_t)c);
+    ESP_LOGI("VOICE", "Sent: %c", c);
 }
 
 // ============ 主函数 ============
@@ -101,21 +100,14 @@ void app_main(void) {
     }
      wifi_event = xEventGroupCreate();
     
-    DHT11_Init(GPIO_NUM_15);
+   DHT11_Init(GPIO_NUM_15);
     onenet_dm_Init();
     wifi_command_Init(wifi_state_callback);
     ESP_ERROR_CHECK(ret);  
     // 3. 等待硬件稳定
     vTaskDelay(pdMS_TO_TICKS(100));
-    
-    
-    
     // 5. 启动VL53L0任务
     xTaskCreate(vl53l0_task, "vl53l0", 4096, NULL, 5, NULL);
-    
-    ESP_LOGI(TAG, "System ready!");
-    
-    ESP_LOGI(TAG, "Initializing Bluetooth...");
     bluetooth_init();
     
     reconnect_timer = xTimerCreate("reconnect_timer",
@@ -123,17 +115,17 @@ void app_main(void) {
                                    pdFALSE, NULL,
                                    reconnect_timer_callback);
     
+        //
     xTaskCreate(temp_monitor_task, "temp_monitor", 4096, NULL, 5, NULL);
     wifi_command_connect(id, password);
-    start_gps_task();
+     start_gps_task();
     while(1) {
-        EventBits_t ev = xEventGroupWaitBits(wifi_event, WIFI_CONNECT_BIT, 
-                                             pdTRUE, pdFALSE, pdMS_TO_TICKS(10*1000));
-        if(ev & WIFI_CONNECT_BIT) {
-            ESP_LOGI(TAG, "WiFi connected, starting OneNet...");
-            onenet_start();
+       EventBits_t ev = xEventGroupWaitBits(wifi_event, WIFI_CONNECT_BIT, 
+                                            pdTRUE, pdFALSE, pdMS_TO_TICKS(10*1000));
+       if(ev & WIFI_CONNECT_BIT) {
+           ESP_LOGI(TAG, "WiFi connected, starting OneNet...");
+           onenet_start();
         }
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
-

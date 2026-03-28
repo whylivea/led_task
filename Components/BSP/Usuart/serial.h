@@ -1,15 +1,23 @@
-#ifndef __UART_H__
-#define __UART_H__
+// serial.h
+#ifndef SERIAL_H
+#define SERIAL_H
 
-void serial_begin(int baudrate, int txd, int rxd);
-void serial_end(void);
-int serial_available(void);
-uint8_t serial_read(void);
-uint8_t serial_peek(void);
-void serial_print(char *ch);
-void serial_println(char *ch);
-void serial_write(uint8_t ch);
-void serial_write_buffer(uint8_t *ch, int len);
-void serial_flash();
+#include <stdint.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "esp_rom_sys.h"
+#include "esp_log.h"
+#include <string.h>
+#include <stdio.h>
+// 函数声明
+int serial_begin(int baudrate, int rx_pin, int tx_pin);
+int serial_available(int instance_id);
+uint8_t serial_read(int instance_id);
+uint8_t serial_peek(int instance_id);
+void serial_print(int instance_id, char *str);
+void serial_println(int instance_id, char *str);
+void serial_write(int instance_id, uint8_t ch);
+void serial_write_buffer(int instance_id, uint8_t *buf, int len);
 
 #endif
